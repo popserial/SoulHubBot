@@ -1,0 +1,21 @@
+{
+  "name": "soul-hub-moderation-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram join-request moderation bot for Soul Hub",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/text.js && node --check src/rules.js && node --check src/moderation.js && node --check src/storage.js && node --check src/handlers.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.7",
+    "telegraf": "^4.16.3",
+    "better-sqlite3": "^12.10.0"
+  }
+}
