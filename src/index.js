@@ -85,7 +85,7 @@ const defaultCommands = [
 const ownerCommands = [
   { command: 'start', description: 'Запустить бота' },
   { command: 'pending', description: 'Открытые заявки' },
-  { command: 'stats', description: 'Статистика' },
+  { command: 'stats', description: 'Статистика заявок (с понедельника)' },
   { command: 'allow_add', description: 'Добавить фразу в разрешающий словарь' },
   { command: 'deny_add', description: 'Добавить фразу в запрещающий словарь' },
   { command: 'allow_remove', description: 'Удалить фразу из разрешающего словаря' },

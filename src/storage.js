@@ -52,11 +52,16 @@ function createStorage(filePath) {
     );
   `);
 
+  const caseColumns = db.prepare('PRAGMA table_info(cases)').all().map((column) => column.name);
+  for (const column of ['route', 'route_reason']) {
+    if (!caseColumns.includes(column)) db.exec(`ALTER TABLE cases ADD COLUMN ${column} TEXT`);
+  }
+
   const insertCase = db.prepare(`
     INSERT OR IGNORE INTO cases
-      (chat_id, user_id, request_date, status, first_name, last_name, username, bio, display_name, reason, matches_json)
+      (chat_id, user_id, request_date, status, first_name, last_name, username, bio, display_name, reason, matches_json, route, route_reason)
     VALUES
-      (@chatId, @userId, @requestDate, @status, @firstName, @lastName, @username, @bio, @displayName, @reason, @matchesJson)
+      (@chatId, @userId, @requestDate, @status, @firstName, @lastName, @username, @bio, @displayName, @reason, @matchesJson, @route, @routeReason)
   `);
   const getCaseByRequest = db.prepare(`
     SELECT * FROM cases WHERE chat_id = ? AND user_id = ? AND request_date = ?
@@ -78,7 +83,7 @@ function createStorage(filePath) {
     createCase(data) {
       const existing = getCaseByRequest.get(data.chatId, data.userId, data.requestDate);
       if (existing) return { record: existing, created: false };
-      insertCase.run(data);
+      insertCase.run({ route: null, routeReason: null, ...data });
       return { record: getCaseByRequest.get(data.chatId, data.userId, data.requestDate), created: true };
     },
     getCaseById(id) {
@@ -129,6 +134,13 @@ function createStorage(filePath) {
         UPDATE cases SET status = 'manual_review', reason = 'interrupted', updated_at = unixepoch()
         WHERE status = 'received'
       `).run().changes;
+    },
+    statsBetween(fromSec, toSec) {
+      return db.prepare(`
+        SELECT route, route_reason AS routeReason, status, reason, COUNT(*) AS n
+        FROM cases WHERE created_at >= ? AND created_at < ?
+        GROUP BY route, route_reason, status, reason
+      `).all(fromSec, toSec);
     },
     listRecentCases(limit = 10) {
       return db.prepare('SELECT * FROM cases ORDER BY id DESC LIMIT ?').all(limit);

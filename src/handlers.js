@@ -113,6 +113,77 @@ function phraseKey(value) {
   return String(value).trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е');
 }
 
+const STATS_UTC_OFFSET_HOURS = 3; // Москва
+
+const ROUTE_REASON_LABELS = {
+  no_dictionary_match: 'нет совпадений в словарях',
+  allow_deny_conflict: 'конфликт разрешающих и запрещающих слов',
+  bio_missing: 'нет описания профиля (бот задал вопрос)',
+  name_missing_or_unrecognized: 'имя не распознано (бот задал вопрос)',
+  processing_error: 'ошибка обработки'
+};
+
+function statsRange(arg, nowSec) {
+  const offset = STATS_UTC_OFFSET_HOURS * 3600;
+  const today = Math.floor((nowSec + offset) / 86400);
+  const monday = (today - ((today + 3) % 7)) * 86400 - offset; // 1.01.1970 — четверг
+  if (!arg) return { from: monday, to: nowSec + 1, title: 'с понедельника' };
+  if (arg === 'prev') return { from: monday - 7 * 86400, to: monday, title: 'за прошлую неделю' };
+  if (arg === 'all') return { from: 0, to: nowSec + 1, title: 'за всё время', noDates: true };
+  const days = Number(arg);
+  if (Number.isInteger(days) && days > 0 && days <= 3650) {
+    return { from: nowSec - days * 86400, to: nowSec + 1, title: `за последние ${days} дн.` };
+  }
+  return null;
+}
+
+function formatStats(rows, range) {
+  const offset = STATS_UTC_OFFSET_HOURS * 3600;
+  const day = (sec) => {
+    const d = new Date((sec + offset) * 1000);
+    return `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  };
+  const dates = range.noDates ? '' : ` (${day(range.from)} – ${day(range.to - 1)})`;
+  const title = `📊 Статистика ${range.title}${dates}`;
+
+  const sum = (predicate) => rows.filter(predicate).reduce((acc, row) => acc + row.n, 0);
+  const total = sum(() => true);
+  if (!total) return `${title}\nЗаявок не было.`;
+  const pct = (n) => `${n} (${Math.round((n / total) * 100)}%)`;
+
+  const banned = sum((r) => r.reason === 'active_ban');
+  const bot = (route) => sum((r) => r.reason !== 'active_ban' && r.route === route);
+  const isManual = (r) => r.reason !== 'active_ban' && (r.route === 'manual_review' || r.route === 'dialog');
+  const manual = sum(isManual);
+  const unlabeled = sum((r) => r.reason !== 'active_ban' && !r.route);
+  const failed = sum((r) => r.status === 'action_failed');
+
+  const lines = [
+    title,
+    `Всего заявок: ${total} (повторные подачи считаются отдельно)`,
+    `✅ Принято ботом сам: ${pct(bot('approve'))}`,
+    `⛔ Отклонено ботом сам: ${pct(bot('reject') + banned)}${banned ? ` — из них по действующему бану: ${banned}` : ''}`,
+    `🟡 На ручную проверку: ${pct(manual)}`
+  ];
+
+  const byReason = new Map();
+  for (const row of rows.filter(isManual)) {
+    byReason.set(row.routeReason, (byReason.get(row.routeReason) || 0) + row.n);
+  }
+  for (const [reason, n] of [...byReason].sort((a, b) => b[1] - a[1])) {
+    lines.push(`   • ${ROUTE_REASON_LABELS[reason] || reason || 'причина не указана'}: ${n}`);
+  }
+  if (manual) {
+    const approved = sum((r) => isManual(r) && r.status === 'approved');
+    const rejected = sum((r) => isManual(r) && r.status === 'rejected');
+    const closed = sum((r) => isManual(r) && r.status === 'closed');
+    lines.push(`   Из ручных: вы одобрили ${approved}, отклонили ${rejected}, отозвано ${closed}, ждут решения ${manual - approved - rejected - closed}`);
+  }
+  if (unlabeled) lines.push(`Без метки (заявки до обновления статистики): ${unlabeled}`);
+  if (failed) lines.push(`⚠️ Ошибок при одобрении/отклонении: ${failed} — см. /pending`);
+  return lines.join('\n');
+}
+
 function createHandlers({ bot, config, storage, getRules }) {
   // Защита от двойного нажатия на кнопку, пока заявка ещё обрабатывается.
   const busy = new Set();
@@ -264,7 +335,9 @@ function createHandlers({ bot, config, storage, getRules }) {
       bio,
       displayName: [user.first_name, user.last_name].filter(Boolean).join(' ').trim(),
       reason: profile.reason,
-      matchesJson: JSON.stringify(profile.matches)
+      matchesJson: JSON.stringify(profile.matches),
+      route: profile.action,
+      routeReason: profile.reason
     });
     const record = caseResult.record;
 
@@ -421,12 +494,11 @@ function createHandlers({ bot, config, storage, getRules }) {
         await ctx.reply(buildReviewMessage(record), caseKeyboard(record.id));
       }
     } else if (command === '/stats') {
-      const recent = storage.listRecentCases(1000);
-      const counts = recent.reduce((acc, row) => {
-        acc[row.status] = (acc[row.status] || 0) + 1;
-        return acc;
-      }, {});
-      await ctx.reply(`Статистика последних ${recent.length} заявок:\n${Object.entries(counts).map(([k, v]) => `${k}: ${v}`).join('\n') || 'Нет данных'}`);
+      const range = statsRange(text.split(/\s+/)[1], Math.floor(Date.now() / 1000));
+      if (!range) {
+        return ctx.reply('Использование: /stats — с понедельника, /stats prev — прошлая неделя, /stats 30 — последние 30 дней, /stats all — всё время.');
+      }
+      await ctx.reply(formatStats(storage.statsBetween(range.from, range.to), range));
     } else if (['/allow_add', '/deny_add', '/allow_remove', '/deny_remove', '/dictionaries'].includes(command)) {
       try {
         if (command === '/dictionaries') {
@@ -479,7 +551,7 @@ function createHandlers({ bot, config, storage, getRules }) {
       await ctx.reply(
         '📖 Команды Soul Hub Moderation Bot\n\n' +
         '/pending — посмотреть открытые заявки\n' +
-        '/stats — статистика заявок и модерации\n' +
+        '/stats — статистика с понедельника (/stats prev — прошлая неделя, /stats 30 — за 30 дней, /stats all — всё время)\n' +
         '/allow_add фраза — добавить фразу в разрешающий словарь\n' +
         '/deny_add фраза — добавить фразу в запрещающий словарь\n' +
         '/allow_remove фраза — удалить фразу из разрешающего словаря\n' +
