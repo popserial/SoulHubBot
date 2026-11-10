@@ -36,7 +36,7 @@ bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
     console.warn('[service message delete]', error.message);
   }
 });
-bot.on('message', async (ctx, next) => {
+bot.on('message', async (ctx) => {
   try {
     const firstWord = (ctx.message?.text || '').split(/\s+/)[0].split('@')[0];
     if (ctx.chat?.type === 'private' && firstWord === '/start') {
@@ -84,7 +84,8 @@ const defaultCommands = [
 
 const ownerCommands = [
   { command: 'start', description: 'Запустить бота' },
-  { command: 'pending', description: 'Открытые заявки' },
+  { command: 'pending', description: 'Список открытых заявок' },
+  { command: 'auto', description: 'Кого бот принял/отклонил сам' },
   { command: 'stats', description: 'Статистика заявок (с понедельника)' },
   { command: 'allow_add', description: 'Добавить фразу в разрешающий словарь' },
   { command: 'deny_add', description: 'Добавить фразу в запрещающий словарь' },
@@ -115,6 +116,10 @@ bot.launch({
   console.log('Soul Hub Moderation Bot started.');
   console.log(`Target group: ${config.groupId}`);
   handlers.recoverInterrupted().catch((error) => console.error('[recoverInterrupted]', error));
+  // Ежедневная сводка: проверяем раз в минуту, отправляется один раз в сутки.
+  const digestTick = () => handlers.maybeSendDigest().catch((error) => console.error('[digest]', error));
+  digestTick();
+  setInterval(digestTick, 60 * 1000);
 }).catch((error) => {
   console.error('Failed to launch bot:', error);
   process.exit(1);

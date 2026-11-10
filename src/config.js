@@ -16,6 +16,15 @@ function positiveInt(name, fallback) {
   return parsed;
 }
 
+// Час (по Москве), после которого раз в сутки приходит сводка. DIGEST_HOUR=off — выключить.
+function digestHour(value) {
+  if (value === undefined || value === '') return 9;
+  if (String(value).toLowerCase() === 'off') return null;
+  const hour = Number.parseInt(value, 10);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error('DIGEST_HOUR must be 0-23 or "off"');
+  return hour;
+}
+
 function resolvePath(value, fallback) {
   return path.resolve(process.cwd(), value || fallback);
 }
@@ -29,7 +38,8 @@ const config = {
   denyWordsPath: resolvePath(process.env.DENY_WORDS_PATH, './config/deny.json'),
   namesCsvPath: resolvePath(process.env.NAMES_CSV_PATH, './data/names.csv'),
   refusalsBeforeBan: positiveInt('REFUSALS_BEFORE_BAN', 4),
-  banDays: positiveInt('BAN_DAYS', 7)
+  banDays: positiveInt('BAN_DAYS', 7),
+  digestHour: digestHour(process.env.DIGEST_HOUR)
 };
 
 for (const file of [config.allowWordsPath, config.denyWordsPath]) {
