@@ -28,14 +28,14 @@ function getRules() {
 const handlers = createHandlers({ bot, config, storage, getRules });
 
 bot.on('chat_join_request', handlers.onJoinRequest);
-bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
-  if (String(ctx.chat.id) !== String(config.groupId)) return;
-  try {
-    await ctx.deleteMessage();
-  } catch (error) {
-    console.warn('[service message delete]', error.message);
-  }
-});
+// bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
+//   if (String(ctx.chat.id) !== String(config.groupId)) return;
+//   try {
+//     await ctx.deleteMessage();
+//   } catch (error) {
+//     console.warn('[service message delete]', error.message);
+//   }
+// });
 bot.on('message', async (ctx) => {
   try {
     const firstWord = (ctx.message?.text || '').split(/\s+/)[0].split('@')[0];
