@@ -28,14 +28,14 @@ function getRules() {
 const handlers = createHandlers({ bot, config, storage, getRules });
 
 bot.on('chat_join_request', handlers.onJoinRequest);
-// bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
-//   if (String(ctx.chat.id) !== String(config.groupId)) return;
-//   try {
-//     await ctx.deleteMessage();
-//   } catch (error) {
-//     console.warn('[service message delete]', error.message);
-//   }
-// });
+bot.on(['new_chat_members', 'left_chat_member'], async (ctx) => {
+  if (String(ctx.chat.id) !== String(config.groupId)) return;
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    console.warn('[service message delete]', error.message);
+  }
+});
 bot.on('message', async (ctx) => {
   try {
     const firstWord = (ctx.message?.text || '').split(/\s+/)[0].split('@')[0];
@@ -120,6 +120,10 @@ bot.launch({
   const digestTick = () => handlers.maybeSendDigest().catch((error) => console.error('[digest]', error));
   digestTick();
   setInterval(digestTick, 60 * 1000);
+  // Заявки без ответа на вопрос бота отклоняются автоматически (срок — в handlers.js).
+  const expireTick = () => handlers.expireStaleDialogs().catch((error) => console.error('[expire]', error));
+  expireTick();
+  setInterval(expireTick, 5 * 60 * 1000);
 }).catch((error) => {
   console.error('Failed to launch bot:', error);
   process.exit(1);

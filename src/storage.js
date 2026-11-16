@@ -4,9 +4,9 @@ const OPEN_STATUSES = "('manual_review', 'awaiting_reply', 'awaiting_profile_upd
 
 const AUTO_SQL = `
   SELECT * FROM cases
-  WHERE created_at >= @from AND created_at < @to
-    AND (route IN ('approve', 'reject') OR reason = 'active_ban')
-    AND (@kind = 'all' OR (CASE WHEN reason = 'active_ban' THEN 'reject' ELSE route END) = @kind)`;
+  WHERE updated_at >= @from AND updated_at < @to
+    AND (route IN ('approve', 'reject') OR reason IN ('active_ban', 'no_reply_timeout'))
+    AND (@kind = 'all' OR (CASE WHEN reason IN ('active_ban', 'no_reply_timeout') THEN 'reject' ELSE route END) = @kind)`;
 
 function createStorage(filePath) {
   const db = new Database(filePath);
@@ -215,11 +215,26 @@ function createStorage(filePath) {
     },
     // Автоматические решения бота (без участия владельца): принятые, отклонённые, отклонённые по бану.
     listAutoCases({ from, to, kind, limit, offset }) {
-      return db.prepare(`${AUTO_SQL} ORDER BY created_at DESC, id DESC LIMIT @limit OFFSET @offset`)
+      return db.prepare(`${AUTO_SQL} ORDER BY updated_at DESC, id DESC LIMIT @limit OFFSET @offset`)
         .all({ from, to, kind, limit, offset });
     },
     countAuto({ from, to, kind }) {
       return db.prepare(`SELECT COUNT(*) AS n FROM (${AUTO_SQL})`).get({ from, to, kind }).n;
+    },
+    // Диалоги, на которые человек не ответил с момента вопроса (или последнего сообщения) до cutoff.
+    listStaleAwaiting(cutoffSec) {
+      return db.prepare(`
+        SELECT * FROM cases
+        WHERE status = 'awaiting_reply'
+          AND MAX(COALESCE(prompt_sent_at, created_at), COALESCE(last_user_message_at, 0)) < ?
+        ORDER BY created_at ASC
+      `).all(cutoffSec);
+    },
+    countTimeouts(fromSec, toSec) {
+      return db.prepare(`
+        SELECT COUNT(*) AS n FROM cases
+        WHERE reason = 'no_reply_timeout' AND updated_at >= ? AND updated_at < ?
+      `).get(fromSec, toSec).n;
     },
     statsBetween(fromSec, toSec) {
       return db.prepare(`

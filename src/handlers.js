@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Markup } = require('telegraf');
-const { evaluateProfile, SHORT_PROMPT, LONG_PROMPT } = require('./moderation');
+const { evaluateProfile, PROMPTS, LONG_PROMPT } = require('./moderation');
 const { readWordList, writeWordList } = require('./rules');
 
 const FINAL_BAN_REASON = 'Превышен лимит отказов при подаче заявок';
@@ -12,6 +12,10 @@ const CLOSED_REQUEST_ERRORS = /HIDE_REQUESTER_MISSING|USER_ALREADY_PARTICIPANT/;
 const FINAL_STATUSES = ['approved', 'rejected', 'closed'];
 // Если после вашего отказа человек подал заявку с теми же именем и описанием — отклоняем молча.
 const REPEAT_DECLINE_DAYS = 14;
+// Через сколько дней без ответа на вопрос бота заявка отклоняется автоматически.
+const AWAITING_REPLY_TIMEOUT_DAYS = 2;
+const TIMEOUT_MESSAGE = 'Вы долго не отвечали, поэтому заявка в группу Soul Hub отклонена. ' +
+  'Если захотите вступить, подайте заявку заново и ответьте на вопрос, который я задам 🙂';
 const PENDING_LIMIT = 10; // больше 10 блоков не показываем (10 эмодзи-номеров)
 const LIST_HEADER = '📋 Открытые заявки';
 const HTML = { parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
@@ -45,6 +49,7 @@ function reasonLabel(reason) {
     processing_error: 'Ошибка при обработке заявки',
     interrupted: 'Обработка была прервана перезапуском бота',
     request_already_closed: 'Заявка уже закрыта в Telegram',
+    no_reply_timeout: `Не ответил за ${AWAITING_REPLY_TIMEOUT_DAYS} дн. — заявка отклонена`,
     repeat_rejected: 'Повторная заявка с теми же данными после отказа',
   };
   return labels[reason] || reason || 'Причина не указана';
@@ -65,7 +70,7 @@ const SHORT_REASONS = {
 };
 
 const ROUTE_REASON_LABELS = {
-  no_dictionary_match: 'нет совпадений в словарях',
+  no_dictionary_match: 'нет совпадений в словарях (бот задал вопрос)',
   allow_deny_conflict: 'конфликт разрешающих и запрещающих слов',
   bio_missing: 'нет описания профиля (бот задал вопрос)',
   name_missing_or_unrecognized: 'имя не распознано (бот задал вопрос)',
@@ -178,7 +183,9 @@ function formatStats(rows, range, extra) {
 
   const banned = sum((r) => r.reason === 'active_ban');
   const bot = (route) => sum((r) => r.reason !== 'active_ban' && r.route === route);
-  const isManual = (r) => r.reason !== 'active_ban' && (r.route === 'manual_review' || r.route === 'dialog');
+  const timedOut = sum((r) => r.reason === 'no_reply_timeout');
+  const isManual = (r) => r.reason !== 'active_ban' && r.reason !== 'no_reply_timeout'
+    && (r.route === 'manual_review' || r.route === 'dialog');
   const manual = sum(isManual);
   const unlabeled = sum((r) => r.reason !== 'active_ban' && !r.route);
   const failed = sum((r) => r.status === 'action_failed');
@@ -204,6 +211,7 @@ function formatStats(rows, range, extra) {
     const closed = sum((r) => isManual(r) && r.status === 'closed');
     lines.push(`   Из ручных: вы одобрили ${approved}, отклонили ${rejected}, отозвано ${closed}, ждут решения ${manual - approved - rejected - closed}`);
   }
+  if (timedOut) lines.push(`⏳ Отклонено за безответность (${AWAITING_REPLY_TIMEOUT_DAYS} дн.): ${pct(timedOut)}`);
   if (extra?.merged) lines.push(`🔁 Повторных подач, добавленных к уже открытым заявкам: ${extra.merged}`);
   if (extra?.silent) lines.push(`🔁 Повторных заявок, отклонённых молча (те же данные после отказа): ${extra.silent}`);
   if (extra?.bans) lines.push(`🚫 Блокировок за период: ${extra.bans}`);
@@ -350,6 +358,7 @@ function createHandlers({ bot, config, storage, getRules }) {
       const approved = c.reason !== 'active_ban' && c.route === 'approve';
       let why;
       if (c.reason === 'active_ban') why = 'пользователь в блокировке';
+      else if (c.reason === 'no_reply_timeout') why = `не ответил за ${AWAITING_REPLY_TIMEOUT_DAYS} дн.`;
       else if (c.reason === 'repeat_rejected') why = 'повтор после вашего отказа';
       else if (approved && matches.allowMatches?.length) why = `подошло: ${matches.allowMatches.slice(0, 3).join(', ')}`;
       else if (!approved && matches.denyMatches?.length) why = `запрещено: ${matches.denyMatches.slice(0, 3).join(', ')}`;
@@ -357,7 +366,7 @@ function createHandlers({ bot, config, storage, getRules }) {
       const icon = c.status === 'action_failed' ? '⚠️' : approved ? '✅' : '⛔';
       const nick = c.username ? ` @${esc(c.username)}` : '';
       const name = { ...c, display_name: shorten(c.display_name || 'без имени', 30) };
-      lines.push('', `${icon} <b>${profileLink(name)}</b>${nick} · ${formatAgo(c.created_at, now)} назад`);
+      lines.push('', `${icon} <b>${profileLink(name)}</b>${nick} · ${formatAgo(c.updated_at, now)} назад`);
       lines.push(`   📝 ${c.bio ? `«${esc(shorten(c.bio, 80))}»` : 'описания нет'} · ${esc(shorten(why, 60))}`);
     }
 
@@ -455,7 +464,7 @@ function createHandlers({ bot, config, storage, getRules }) {
   // Диалог: бот пишет человеку первым (в пределах 5 минут после заявки). Владельцу ничего не приходит,
   // пока человек не ответит. Если написать не удалось — сразу карточка на ручную проверку.
   async function startDialog(record, promptType, userChatId) {
-    const prompt = promptType === 'short' ? SHORT_PROMPT : LONG_PROMPT;
+    const prompt = PROMPTS[promptType] || LONG_PROMPT;
     storage.updateCase(record.id, 'awaiting_reply', record.reason, {
       promptType,
       promptSentAt: Math.floor(Date.now() / 1000)
@@ -607,6 +616,8 @@ function createHandlers({ bot, config, storage, getRules }) {
     if (!rows.length && !pending.decision && !pending.waiting) return false;
 
     const lines = ['📬 Ежедневная сводка', formatStats(rows, range, storage.statsExtra(range.from, range.to))];
+    const timeouts = storage.countTimeouts(range.from, range.to);
+    if (timeouts) lines.push(`⏳ За эти сутки отклонено за безответность: ${timeouts} (список — /auto)`);
     if (pending.decision || pending.waiting) {
       lines.push(`\n⏳ Сейчас ждут вашего решения: ${pending.decision}, ждём ответа людей: ${pending.waiting}. Откройте /pending.`);
     }
@@ -624,13 +635,43 @@ function createHandlers({ bot, config, storage, getRules }) {
     return sendDigest();
   }
 
+  // Заявки без ответа на вопрос бота дольше AWAITING_REPLY_TIMEOUT_DAYS отклоняются автоматически.
+  // Уведомление человеку — по возможности: боту обычно можно написать первым лишь около 5 минут после заявки,
+  // поэтому оно дойдёт только до тех, кто успел открыть чат с ботом. Отказ не идёт в счётчик отказов и бана.
+  async function expireStaleDialogs() {
+    const cutoff = Math.floor(Date.now() / 1000) - AWAITING_REPLY_TIMEOUT_DAYS * 86400;
+    let expired = 0;
+    for (const stale of storage.listStaleAwaiting(cutoff)) {
+      if (busy.has(stale.id)) continue;
+      busy.add(stale.id);
+      try {
+        const record = storage.getCaseById(stale.id);
+        if (!record || record.status !== 'awaiting_reply') continue;
+        await bot.telegram.sendMessage(Number(record.user_id), TIMEOUT_MESSAGE).catch(() => {});
+        try {
+          await bot.telegram.declineChatJoinRequest(Number(record.chat_id), Number(record.user_id));
+        } catch (error) {
+          console.error('[timeout decline failed]', error.message);
+          await failCase(record, 'decline', error);
+          continue;
+        }
+        storage.updateCase(record.id, 'rejected', 'no_reply_timeout');
+        await renderCard(record.id);
+        expired += 1;
+      } finally {
+        busy.delete(stale.id);
+      }
+    }
+    return expired;
+  }
+
   async function onStart(ctx) {
     if (String(ctx.from.id) === String(config.ownerId)) {
       return ctx.reply('Бот работает. /help — команды, /pending — открытые заявки.');
     }
     const record = storage.getLatestCase(config.groupId, ctx.from.id);
     if (record && record.status === 'awaiting_reply') {
-      return ctx.reply(record.prompt_type === 'short' ? SHORT_PROMPT : LONG_PROMPT);
+      return ctx.reply(PROMPTS[record.prompt_type] || LONG_PROMPT);
     }
     return ctx.reply('Это бот модерации группы Soul Hub. Если я вам не писал, отвечать здесь ничего не нужно.');
   }
@@ -817,7 +858,7 @@ function createHandlers({ bot, config, storage, getRules }) {
         'Сомнительные приходят вам одной карточкой с кнопками — после решения карточка сворачивается в строку. ' +
         'Раз в сутки приходит сводка.\n\n' +
         '/pending — список открытых заявок с кнопками\n' +
-        '/auto — кого бот принял или отклонил сам за 24 часа (/auto 72 — за 72 часа)\n' +
+        '/auto — кого бот принял или отклонил сам, в том числе за безответность (/auto 72 — за 72 часа)\n' +
         '/stats — статистика с понедельника (/stats prev — прошлая неделя, /stats 30 — за 30 дней, /stats all — всё время)\n' +
         '/allow_add фраза — добавить фразу в разрешающий словарь\n' +
         '/deny_add фраза — добавить фразу в запрещающий словарь\n' +
@@ -878,7 +919,7 @@ function createHandlers({ bot, config, storage, getRules }) {
 
   return {
     onJoinRequest, onPrivateMessage, onOwnerCallback, ownerCommand,
-    recoverInterrupted, onStart, maybeSendDigest, sendDigest
+    recoverInterrupted, onStart, maybeSendDigest, sendDigest, expireStaleDialogs
   };
 }
 

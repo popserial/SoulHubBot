@@ -12,6 +12,13 @@ const LONG_PROMPT = `Здравствуйте! Я администратор г�
 
 Если добавите в шапку аккаунта имя и кратко укажете связь с профессией здесь, в чате — я с радостью приму заявку 🙏`;
 
+// Профиль в порядке, но в словарях нет совпадений: просим человека назвать профессию.
+const PROFESSION_PROMPT = `Здравствуйте! Я бот администратора группы Soul Hub — спасибо, что отправили заявку на вступление, я как раз её обрабатываю 🙂
+
+Наша группа создана для начинающих психологов. Подскажите, пожалуйста: вы психолог / учитесь на психолога?`;
+
+const PROMPTS = { short: SHORT_PROMPT, long: LONG_PROMPT, profession: PROFESSION_PROMPT };
+
 function displayName(user) {
   return [user.first_name, user.last_name].filter(Boolean).join(' ').trim();
 }
@@ -57,9 +64,9 @@ function evaluateProfile(user, bio, rules) {
     return { action: 'approve', reason: 'allow_keyword', matches, name, hasBio };
   }
 
-  return { action: 'manual_review', reason: 'no_dictionary_match', matches, name, hasBio };
+  return { action: 'dialog', reason: 'no_dictionary_match', promptType: 'profession', matches, name, hasBio };
 }
 
 // Ответы пользователей в диалоге не анализируются автоматически: все они уходят владельцу.
 
-module.exports = { evaluateProfile, displayName, SHORT_PROMPT, LONG_PROMPT };
+module.exports = { evaluateProfile, displayName, PROMPTS, SHORT_PROMPT, LONG_PROMPT, PROFESSION_PROMPT };
