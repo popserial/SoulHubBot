@@ -16,6 +16,8 @@ const REPEAT_DECLINE_DAYS = 14;
 const AWAITING_REPLY_TIMEOUT_DAYS = 2;
 const TIMEOUT_MESSAGE = 'Вы долго не отвечали, поэтому заявка в группу Soul Hub отклонена. ' +
   'Если захотите вступить, подайте заявку заново и ответьте на вопрос, который я задам 🙂';
+// Номера блоков в списке /pending (их же видно на кнопках и в подтверждении).
+const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 const PENDING_LIMIT = 10; // больше 10 блоков не показываем (10 эмодзи-номеров)
 const LIST_HEADER = '📋 Открытые заявки';
 const HTML = { parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
@@ -281,7 +283,6 @@ function createHandlers({ bot, config, storage, getRules }) {
 
     const counts = storage.countPending();
     const now = Math.floor(Date.now() / 1000);
-    const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
     const SEPARATOR = '──────────────';
     const block = (c, n) => {
       const nick = c.username ? ` @${esc(c.username)}` : '';
@@ -320,7 +321,7 @@ function createHandlers({ bot, config, storage, getRules }) {
     const ordered = [...shown.filter((c) => c.status !== 'awaiting_reply'), ...shown.filter((c) => c.status === 'awaiting_reply')];
     const rows = ordered.map((c, i) => [
       Markup.button.callback(`✅ ${KEYCAPS[i]}`, `case:approve:${c.id}`),
-      Markup.button.callback(`❌ ${KEYCAPS[i]}`, `case:rejectask:${c.id}`)
+      Markup.button.callback(`❌ ${KEYCAPS[i]}`, `case:rejectask:${c.id}:${i}`)
     ]);
     return { text, extra: { ...HTML, ...Markup.inlineKeyboard(rows) } };
   }
@@ -719,9 +720,9 @@ function createHandlers({ bot, config, storage, getRules }) {
       return;
     }
     if (String(callback.data || '').startsWith('auto:')) return onAutoCallback(ctx);
-    const match = /^case:(approve|reject|rejectask|cancel|hold):(\d+)$/.exec(callback.data || '');
+    const match = /^case:(approve|reject|rejectask|cancel|hold):(\d+)(?::(\d+))?$/.exec(callback.data || '');
     if (!match) return;
-    const [, action, idText] = match;
+    const [, action, idText, position] = match;
     const record = storage.getCaseById(Number(idText));
     if (!record) {
       await ctx.answerCbQuery('Заявка не найдена.', { show_alert: true });
@@ -748,7 +749,7 @@ function createHandlers({ bot, config, storage, getRules }) {
     if (action === 'rejectask') { // второй шаг для отказа из списка
       await ctx.answerCbQuery();
       await ctx.editMessageReplyMarkup(Markup.inlineKeyboard([[
-        Markup.button.callback(`❌ Да, отклонить #${record.id}`, `case:reject:${record.id}`),
+        Markup.button.callback(`❌ Да, отклонить ${KEYCAPS[Number(position)] || ''} ${shorten(record.display_name || '', 12)}`.replace(/\s+/g, ' ').trim(), `case:reject:${record.id}`),
         Markup.button.callback('↩️ Отмена', `case:cancel:${record.id}`)
       ]]).reply_markup).catch(() => {});
       return;
